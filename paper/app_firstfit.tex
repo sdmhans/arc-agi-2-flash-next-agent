@@ -1,0 +1,84 @@
+\section{First-fit analysis}\label{app:firstfit}
+
+This appendix gives the data behind the middle panel of Figure~\ref{fig:fig2_tcw.png} and the ``long searches overfit'' claim. It was computed from the logs of existing offline runs on augmented public evaluation, without new generation.
+
+\textbf{Definitions.} A \emph{chain} is one conversation: the primary chain of a task, or a tail second chain. Its \emph{first fit} is the earliest program the harness checked that passed every training pair, whether or not it was submitted. \emph{Tokens at first fit} are the generated (completion) tokens of that chain up to and including the reply that wrote the program; this is the same token clock the budget uses. A first fit is \emph{right} if all of the task's test outputs match the gold exactly (about 40\% of fits are on tasks with two or three test inputs). \emph{Task solved} means the task was finally scored correct by the run, which can happen even when the first fit was wrong.
+
+\textbf{Runs.} Final harness (budget v2 on the v33 harness): ev3-d1-mwv33 (augD1, 99.50), ev3-d1-mwv33r3 (augD1, 93.50), ev3-d2-mwv33 (augD2, 98.67). Budget v2 on the older v32 harness: ev3-d1-mwv2 (98.83), ev3-d2-mwv2 (97.17). Time bank: multi-wave ev3-d1-mwb (94.17), ev3-d1-mwb2 (91.00), ev3-d2-mwb (91.33), ev3-d2-mwb2 (93.17), and one wave per 30-task shard ev3-d1-tc (96.67), ev3-d1-t86 (95.67). The two runs of mwv33 on augD1 differ by six points.
+
+\begin{table}[H]\centering\small
+\resizebox{\linewidth}{!}{\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Tokens at first fit & $<$10k & 10--20k & 20--40k & 40--80k & $\geq$80k \\
+\midrule
+Final harness, primary (352 fits) & 31/33 (94\%) & 38/54 (70\%) & 80/105 (76\%) & 65/118 (55\%) & 12/42 (29\%) \\
+\quad share of fits & 9\% & 15\% & 30\% & 34\% & 12\% \\
+\quad task finally solved & 97\% & 85\% & 89\% & 75\% & 43\% \\
+Budget v2 family, primary (588) & 44/48 (92\%) & 75/100 (75\%) & 131/170 (77\%) & 103/191 (54\%) & 19/79 (24\%) \\
+Time bank, primary (692) & 38/43 (88\%) & 110/137 (80\%) & 158/212 (75\%) & 113/206 (55\%) & 16/94 (17\%) \\
+Final harness, tail chains (36) & -- & -- & 3/4 & 6/11 & 6/21 (29\%) \\
+\midrule
+First \emph{submit} instead of first fit, final (352) & 14/14 & 34/38 (89\%) & 90/105 (86\%) & 93/132 (70\%) & 24/63 (38\%) \\
+\bottomrule
+\end{tabular}}
+\caption{Share of first train-passing programs that are right on the test, by generated tokens before they were found. 95\% Wilson intervals for the final harness: [80, 98], [57, 81], [67, 83], [46, 64], [17, 44].}\label{tab:ff}
+\end{table}
+
+\begin{table}[H]\centering\small
+\begin{tabular}{@{}lrrrrrrrrrr@{}}
+\toprule
+Tokens (k) & $<$5 & 5--10 & 10--15 & 15--20 & 20--30 & 30--40 & 40--60 & 60--80 & 80--120 & $\geq$120 \\
+\midrule
+$n$ & 7 & 26 & 29 & 25 & 63 & 42 & 76 & 42 & 29 & 13 \\
+right & 100\% & 92\% & 83\% & 56\% & 76\% & 76\% & 61\% & 45\% & 31\% & 23\% \\
+\bottomrule
+\end{tabular}
+\caption{Finer bins, final harness, primary chains. The dip at 15--20k appears in two of the three runs individually; we do not have an explanation for it.}
+\end{table}
+
+\begin{table}[H]\centering\small
+\begin{tabular}{@{}llrrrrrrr@{}}
+\toprule
+Run & Harness & Score & Fits & Right & Median tokens & $<$10k & 40--80k & $\geq$80k \\
+\midrule
+d1-mwv33 & final & 99.50 & 117 & 67\% & 33.4k & 9/11 & 25/41 & 2/11 \\
+d1-mwv33r3 & final & 93.50 & 118 & 59\% & 36.1k & 9/9 & 20/41 & 4/15 \\
+d2-mwv33 & final & 98.67 & 117 & 67\% & 35.3k & 13/13 & 20/36 & 6/16 \\
+d1-mwv2 & v2 on v32 & 98.83 & 119 & 66\% & 39.8k & 7/7 & 22/38 & 6/21 \\
+d2-mwv2 & v2 on v32 & 97.17 & 117 & 58\% & 32.8k & 6/8 & 16/35 & 1/16 \\
+d1-mwb & time bank & 94.17 & 113 & 66\% & 34.6k & 5/5 & 19/37 & 1/13 \\
+d1-mwb2 & time bank & 91.00 & 116 & 61\% & 35.9k & 6/7 & 21/34 & 3/17 \\
+d2-mwb & time bank & 91.33 & 115 & 64\% & 31.3k & 6/6 & 18/26 & 1/17 \\
+d2-mwb2 & time bank & 93.17 & 112 & 63\% & 37.4k & 6/6 & 21/38 & 0/11 \\
+d1-tc & time bank & 96.67 & 118 & 59\% & 34.8k & 8/10 & 15/34 & 4/18 \\
+d1-t86 & time bank & 95.67 & 118 & 64\% & 35.9k & 7/9 & 19/37 & 7/18 \\
+\bottomrule
+\end{tabular}
+\caption{Per run, primary chains. ``Right'' is the share of first fits that are right.}
+\end{table}
+
+\textbf{Wall time.} The same fits binned by real time on our L40S machines (each lane runs at roughly 30--40 tokens per second there, while the budget clock assumes about 19) show the same shape: under 4 minutes 20 of 22 right (91\%), 8--16 minutes 74\% ($n=102$), 16--32 minutes 60\% ($n=116$), 32 minutes or more 29\% ($n=56$). Wall time is not comparable across machines, so the main text states the result in tokens.
+
+\textbf{Caveats.} All runs use two augmentations of the same 120 public tasks, so tasks repeat across runs, and absolute rates are inflated relative to hidden tasks. Difficulty confounds the curve: 52 of the 126 wrong first fits in the final runs still ended in a solved task.
+
+\section{Token allocation: time bank versus budget v2}\label{app:alloc}
+
+\begin{table}[H]\centering\small
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+Run (augD1 unless noted) & Score & Tasks & Mean & Median & Max & At cap \\
+\midrule
+d1-tc, time bank, one wave per shard & 96.67 & solved 92 & 63.3k & 56.8k & 188k & 0 \\
+ & & not solved 28 & 121.9k & 112.2k & 241k & 0 \\
+d1-mwb2, time bank, multi-wave & 91.00 & solved 87 & 60.1k & 52.7k & 194k & 2 \\
+ & & not solved 33 & 111.0k & 95.8k & 279k & 10 \\
+d2-mwb2, time bank, multi-wave (augD2) & 93.17 & solved 89 & 61.2k & 62.7k & 134k & 2 \\
+ & & not solved 31 & 116.5k & 98.0k & 591k & 8 \\
+d1-mwv33, budget v2 & 99.50 & solved 94 & 61.7k & 61.7k & 190k & 3 \\
+ & & not solved 26 & 106.6k & 100.5k & 192k & 2 \\
+d2-mwv33, budget v2 (augD2) & 98.67 & solved 96 & 65.7k & 62.5k & 188k & 1 \\
+ & & not solved 24 & 104.4k & 93.9k & 194k & 2 \\
+\bottomrule
+\end{tabular}
+\caption{Generated tokens per task in the primary chain. ``At cap'' counts tasks that ended within 2k tokens of their final allotment. On d1-mwv33, 51 tasks were flagged hard and 19 tail chains used a further 1.69M tokens (8.58M in primary chains); on d2-mwv33, 53 tasks were flagged and 14 tail chains ran. Under the multi-wave time bank most cap hits are unsolved tasks, while single tasks could take up to 591k tokens.}
+\end{table}

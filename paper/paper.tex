@@ -1,0 +1,255 @@
+\documentclass[11pt]{article}
+\usepackage[letterpaper,margin=1in]{geometry}
+\usepackage{fontspec}
+\setmainfont{Charter}
+\setsansfont{Avenir Next}[BoldFont={Avenir Next Demi Bold}]
+\setmonofont{Menlo}[Scale=0.82]
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{caption}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{colorlinks=true,linkcolor=RoyalBlue,citecolor=RoyalBlue,urlcolor=RoyalBlue}
+
+\definecolor{ink2}{HTML}{52514E}
+\captionsetup{font={small,sf},labelfont={bf,sf},labelsep=period,skip=4pt}
+\titleformat{\section}{\sffamily\bfseries\large}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\sffamily\bfseries\normalsize}{\thesubsection}{0.6em}{}
+\titlespacing*{\section}{0pt}{1.3em}{0.5em}
+\titlespacing*{\subsection}{0pt}{1em}{0.35em}
+\setlist{itemsep=2pt,topsep=3pt,leftmargin=1.4em}
+\setlength{\parskip}{0.35em}
+\setlength{\parindent}{0pt}
+\linespread{1.08}
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\fancyfoot[C]{\sffamily\footnotesize\color{ink2}\thepage}
+\fancyfoot[R]{\sffamily\footnotesize\color{ink2}Team \_hans · ARC Prize 2026 Paper Track}
+
+\newcommand{\fig}[3]{\begin{figure}[H]\centering\includegraphics[width=#2\linewidth]{../figures/pdf/#1}\caption{#3}\label{fig:#1}\end{figure}}
+
+\begin{document}
+
+\begin{center}
+{\sffamily\bfseries\LARGE Spend the Next Token Where Verification Cannot Reach\par}
+\vspace{0.5em}
+{\sffamily\large\color{ink2} Train-consistent errors, independent re-derivation, and token budgeting\\ for an LLM program-synthesis agent on ARC-AGI-2\par}
+\vspace{0.9em}
+{\sffamily Technical report \quad·\quad Team \_hans \quad·\quad November 2026\par}
+\vspace{0.2em}
+{\sffamily\small\color{ink2} ARC Prize 2026 Paper Track · Kaggle notebook \href{https://www.kaggle.com/code/deepdreamer/fnext-w4a16-arc-submit}{deepdreamer/fnext-w4a16-arc-submit} · submission 57850872 (v33)\par}
+\end{center}
+
+\vspace{0.6em}
+\begin{quote}\small
+\textbf{\sffamily Abstract.} We built a program-synthesis agent around one open-weight model, Qwen3.8-Flash-Next (125B parameters, 6B active), and ran it on Kaggle's four L4 GPUs for ARC-AGI-2. The agent writes Python in a persistent interpreter and may only submit a program that reproduces every training pair. Serving work took throughput from 120 to over 700 generated tokens per second, and for a long time more tokens per task meant a higher score. Then it stopped: with the harness fixed, doubling throughput moved the public leaderboard from 69.2 to 70.1. We trace the plateau to \emph{train-consistent wrong} (TCW) answers, programs that fit all training pairs but get the test wrong, which account for 60 of 71 lost test inputs in our final offline runs. We argue that no check grounded in the training pairs can expose a TCW answer, that long searches make accidental fits more likely, and that retries from the same context repeat the first attempt's reading. Replays with the first attempt held fixed support this: an independent run rescues 39.5\% of doubted wrong answers, against about 20\% for a same-chain retry. A token budget built on these findings (floors for hard tasks, then independent second chains) gained 6.1 of 120 points offline at equal tokens and scored 73.89 on the public leaderboard, up from 70.14.
+\end{quote}
+
+\section{Introduction}
+
+ARC-AGI-2 asks a system to infer a grid transformation from a handful of input/output pairs and apply it to new test inputs \cite{chollet2019,arcagi2}. The Kaggle version adds hard limits: 240 hidden tasks, twelve hours, four 24\,GB L4 GPUs, no internet. Two answers are allowed per test input.
+
+Our approach was an LLM agent that solves each task by writing and testing programs. Programs have a useful property for ARC: they can be checked exactly against the training pairs, so the agent never has to guess whether a candidate fits what it was shown. Most of our competition was spent making that agent cheap enough to run at scale on four small GPUs, and for weeks the leaderboard rewarded every gain in throughput.
+
+When it stopped, the remaining errors were not search failures but programs that passed every check we could run and were still wrong; the tokens that helped most went to a second, independent attempt rather than to reviewing the first. Sections~\ref{sec:setting}--\ref{sec:serving} give the argument and main measurements; the appendices give every experiment behind them. Our contributions:
+\begin{itemize}
+\item A measurement, on the leaderboard and offline, that tokens per task stop buying score while the harness stays fixed, and an account of where the extra tokens went (Section~\ref{sec:tokens}).
+\item A simple argument for why verification against training pairs cannot catch train-consistent errors, why long searches produce more of them, and why same-context retries rarely fix them (Section~\ref{sec:theory}).
+\item Replay experiments with the first attempt held fixed that compare second sources of evidence, plus the null results that fit the same picture (Section~\ref{sec:measure}).
+\item A token budget built on these findings, and the serving stack that made a 125B mixture-of-experts model practical on four L4s (Sections~\ref{sec:budget} and \ref{sec:serving}).
+\end{itemize}
+
+\section{Setting}\label{sec:setting}
+
+\subsection{Hardware and scoring}
+A submission runs once over the 240 hidden tasks with twelve hours on four L4 GPUs (24\,GB each, about 22\,GB usable, PCIe only) and 188\,GB of host RAM. Each test input gets two attempts; a task scores the fraction of its test inputs answered exactly. Because generation dominates the run, throughput translates directly into thinking budget: every extra 100 generated tokens per second gives each task about 18k more tokens over the run.
+
+\subsection{Model}
+We serve Intel's W4A16 AutoRound quantization \cite{autoround} of Qwen3.8-Flash-Next without fine-tuning. The model has 125B parameters with 6B active per token, 512 routed experts per layer (10 active), three Gated DeltaNet linear-attention layers \cite{gateddeltanet} for every full-attention layer, and a 51B-parameter n-gram embedding table (PLE). We tried supervised fine-tuning and GRPO on harness trajectories; none of the fine-tuned models beat the base model on the leaderboard (Section~\ref{sec:null}).
+
+\subsection{Agent}
+The agent uses the tool loop of Tufa Labs' Duck harness \cite{duck}, with one persistent Python interpreter per task.
+\begin{itemize}
+\item Grids are shown as compact rows of digits. The interpreter offers helpers for connected components, shapes, boundaries and colour and symmetry statistics, which the model calls on demand.
+\item The model explores with \texttt{python(...)}. Every new \texttt{transform} is run, in a separate process, on all training pairs, and failures come back as cell-level differences.
+\item The model answers with \texttt{submit(id, issues)}. Only a candidate that passes every training pair is accepted, and the model must list its doubts about the test outputs with a severity from P0 (most serious) to P2.
+\item A doubted answer starts an attempt-2 phase in the same conversation, which asks for the alternative reading that would change the test output.
+\item Thinking is capped at 6,144 tokens per turn (8,192 during reviews); sampling temperature is 0.7. The agent writes a complete submission file every five minutes, so a shortened run still produces a valid answer.
+\end{itemize}
+
+\subsection{How we measured}
+The leaderboard allows one submission a day and a single submission has a standard deviation of about 2.7 points, so most decisions were made offline. Offline runs use the 120 public evaluation tasks under seeded augmentations (two fixed augmented copies), on L40S and H200 machines with a token clock that charges each task what it would cost on Kaggle. Offline scores are optimistic: the expert mask and a short guide of about 20 transformation families were developed on the same public tasks, and for v32 the leaderboard score was 0.86 of the offline one. Single offline runs also differ by several points, so we compare means over several runs where we can and say so where we cannot (Appendix~\ref{app:eval}).
+
+\section{More tokens helped, then stopped helping}\label{sec:tokens}
+
+\fig{fig_tokens_offline.png}{0.84}{An early version of the harness on public evaluation at three Kaggle-equivalent budgets. Between 22k and 40k tokens per task, score rose by about 17 points per 10k tokens. Compressing old history to fit 40k into a smaller context cost 12.5 points.}
+
+\subsection{Offline}
+Early in the competition, score was close to linear in tokens per task (Figure~\ref{fig:fig_tokens_offline.png}). At 22k Kaggle-equivalent tokens per task an early harness scored 44.0 (a repeat run gave 44.3); at 40k it scored 77.5, and the tasks solved at 22k were almost a subset of those solved at 40k. A run with 68k tokens and a larger thinking cap reached 97.3.
+
+\subsection{On the leaderboard}
+Figure~\ref{fig:fig1_throughput_vs_lb.png} shows the leaderboard history (all submissions in Appendix~\ref{app:lb}). Pruning, more lanes and a maturing harness took v1 (22.92) to v13 (mean 69.2 over four submissions). From v13 to v32 we kept the harness fixed and worked only on serving, which took throughput from 315 to 462--639 tokens per second. The score stayed around 70 (v32 mean of three: 70.14).
+
+\fig{fig1_throughput_vs_lb.png}{0.78}{Public leaderboard per submission (top) and generation throughput on Kaggle (bottom). Inside the shaded range the harness did not change; doubling throughput moved the mean from 69.2 to 70.1. v33 introduced the budget mechanism of Section~\ref{sec:budget}.}
+
+\subsection{Where the extra tokens went}
+\textbf{Cut early, idle late.} Our time bank split each finished task's leftover time among all running and queued tasks. Replaying it on 240 tasks showed that it cut 41 to 49 hard tasks from the first wave at 100k to 115k tokens, short of the 127k to 137k they needed, while tasks that started late received 175k to 560k tokens they never used, and the run ended 0.5 to 2.4 hours early. The extra throughput mostly went to tasks that did not need it.
+
+\textbf{Long searches overfit.} Across nine offline runs (1,044 first fits), the first train-passing program in a chain was right about 90\% of the time when it came within 10k generated tokens, and only 17 to 29\% of the time when it came after 80k (Figure~\ref{fig:fig2_tcw.png}, middle). In the three runs of the final harness the numbers are 94\% (31 of 33) and 29\% (12 of 42). Harder tasks take longer, so difficulty is a confound (52 of the 126 wrong first fits in the final runs still ended in a solved task), but the next section argues the direction is expected.
+
+\section{Why checking cannot catch train-consistent errors}\label{sec:theory}
+
+We call an answer \emph{train-consistent wrong} (TCW) if its program reproduces every training output but not the test output. In our final harness TCW answers are the largest loss class: 15 to 23 of 120 points per offline run, and 60 of the 71 test inputs lost in two offline runs of the final budget (Figure~\ref{fig:fig2_tcw.png}). In 61\% of lost test inputs the agent had already said it doubted its answer.
+
+\fig{fig2_concept.png}{0.8}{The version-space view. Every program in $H$ passes every training check, so the only remaining evidence is a second member of $H$ that disagrees on the test input.}
+
+Let $T=\{(x_i,y_i)\}$ be the training pairs and $x^\ast$ a test input, and let
+\[ H(T) = \{\, p : p(x_i) = y_i \text{ for all } i \,\} \]
+be the programs consistent with training. The agent searches until it finds a member of $H$ and submits it. Three consequences follow (Figure~\ref{fig:fig2_concept.png}).
+
+\textbf{1. A blind spot.} Any check whose reference is a training output gives the same verdict for every $p\in H$, so it cannot separate the right program from a TCW one. This holds however the check is phrased: re-running the program, asking the model to re-verify cell by cell, or asking a critic to compare outputs with the training targets. What self-review has left is a prior: how natural the program looks, and whether the test input contains a situation training never shows. The prior carries information (answers the agent doubted were right 37\% of the time, undoubted ones 92\%), but it tells the agent that something is wrong, not what is right. Checks that add assumptions, such as symmetry or invariance audits, are priors too; ours flagged only 8 to 13\% of the errors.
+
+\textbf{2. Search manufactures fits.} Each reading the agent tries and drops is another hypothesis tested against a few training pairs. If a wrong reading fits all of them by accident with some small probability $q$, then the chance that at least one of $k$ wrong readings fits is $1-(1-q)^k$, which grows with $k$. A program that only appears after a long search is therefore more likely to be one of these accidents. This is the multiple-comparisons problem with the training pairs playing the role of the test set, and it matches the falling curve in the middle of Figure~\ref{fig:fig2_tcw.png}.
+
+\textbf{3. Correlated retries.} With two attempts,
+\[ P(\text{solved}) = P(A_1 \text{ right}) + P(A_1 \text{ wrong})\cdot P(A_2 \text{ right} \mid A_1 \text{ wrong}), \]
+so a second attempt is worth exactly its conditional success rate given that the first failed. A retry in the same conversation inherits the first reading: its alternative is usually another wrong reading, or it changes a spot that was never the problem. Wrong programs are also not close to the right one: across 34 never-solved task-runs, no single-point change to a wrong program produced the correct output. An independent derivation, started from a fresh context, shares fewer of these mistakes. When it also lands in $H$ but gives a different test output, the disagreement is observable without the answer key: it shows the task is ambiguous and supplies the alternative.
+
+So once a train-passing program exists, the only evidence left in the training pairs is disagreement with a second, independently derived member of $H$, and a token is worth spending only if it can produce one. None of this is new as theory. It is the version-space view of induction \cite{mitchell1982}, the disagreement principle behind query-by-committee \cite{seung1992}, and it agrees with the finding that language models rarely correct their own reasoning without outside feedback \cite{huang2024}. Program-synthesis systems have long used behaviour on extra inputs to choose among candidates \cite{alphacode,codet}, and self-consistency uses agreement among samples \cite{selfconsistency}. What we add is a measurement of how this plays out inside an ARC agent under a fixed compute budget, and a budget rule built on it.
+
+\section{What rescues a doubted wrong answer}\label{sec:measure}
+
+\subsection{Replay with the first attempt held fixed}
+Comparing second-phase strategies by re-running whole tasks is too noisy: the first attempt changes from run to run, and two runs of the same harness differ by more than the effects we want to see. Instead we replayed the recorded first attempt exactly, charged its recorded tokens to the clock, and ran only the second phase under each strategy. We used the 168 states from eight source runs where the first attempt was doubted and wrong.
+
+\fig{fig2_tcw.png}{0.62}{Top: lost test inputs by class in two offline runs of the final budget; blue classes are train-consistent wrong. Middle: share of first train-passing programs that are right on the test input, by generated tokens before they were found (primary chains, 95\% intervals). Bottom: rescue rate of doubted wrong first attempts under each second source of evidence.}
+
+\begin{table}[H]\centering\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+Second source of evidence & Result on doubted wrong answers \\
+\midrule
+Same-chain attempt 2 (production) & 34 of 168 rescued (20\%) \\
+Explorer proposals merged into the same context & 46 of 168 rescued (27\%) \\
+Independent run of the same task$^{a}$ & 39.5\% rescued \\
+Symmetry and invariant audits & flag only 8 to 13\% \\
+\bottomrule
+\end{tabular}
+\caption{Second sources of evidence for doubted wrong first attempts (168 states from eight runs). First two rows: replay with attempt 1 held fixed. $^{a}$Share of these states whose task was solved by another independent run of the same configuration.}\label{tab:rescue}
+\end{table}
+
+Explorers helped most when they proposed a concrete alternative output rather than describing a doubt. For independent runs the rescue rate was 44.5\% when the first attempt had one doubt line and 27\% with two or more; 35\% of these states were never solved by any run.
+
+\subsection{Two independent runs as the two attempts}
+On the original evaluation tasks, using two independent full runs of the same configuration as attempt 1 and attempt 2 scored 93.2, against 80.6 for a single run. Of that gain, 92\% came from tasks where both runs passed training but produced different test outputs, which is exactly the disagreement signal of Section~\ref{sec:theory}. Taking the second answer from the first run's own checked candidates gained at most one point, because a chain stops at its first pass and rarely holds a second distinct one.
+
+\subsection{Depth matters}
+On 45 hard tasks, a fresh second chain with 64k tokens added nothing, while one with 128k tokens added 3.3 points per run. Second chains that started on tasks with no train-passing program at all rescued 0 of 8. A second chain helps when it can reach $H$ on its own.
+
+\subsection{Null results that fit the same picture}\label{sec:null}
+Many ideas that added text to the same conversation did not help: idea boards, task fact sheets, residual-error reviews, critics and advisors. Table~\ref{tab:null} lists the ones with a clean comparison.
+
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}Xl@{}}
+\toprule
+Change & Result \\
+\midrule
+Fresh restart when no near-pass by 43k tokens (augD1, one run) & 79.8 vs 96.7; 0 of 33 restarts rescued \\
+Thinking cap raised to 32k at the same budget (augD1, one run) & 90.8 vs 96.7 \\
+Thinking cap 12k instead of 6k & $-1.6$ \\
+Model chooses when to stop iterating (augD1, one run) & 94.3 vs 96.7; it almost never iterated \\
+Dihedral/equivariance post-processing & 13\% recall, voting gain about 0 \\
+SFT and GRPO on evaluation-derived tasks & leaderboard 63.5 to 71.4 vs base mean 69.2 \\
+\bottomrule
+\end{tabularx}
+\caption{Changes that did not help. Offline single runs differ by a few points, so only the large gaps are clear.}\label{tab:null}
+\end{table}
+
+\section{Budget mechanism v2}\label{sec:budget}
+
+The final harness spends tokens with these findings in mind (Figure~\ref{fig:fig3_budget_v2.png}):
+\begin{enumerate}
+\item Every task gets a base budget of 86k generated tokens on Kaggle's clock. Whatever a task leaves goes into a shared pool.
+\item A task is marked hard if its first answer carries a P0 or P1 doubt, or if nothing passes training by 60k tokens. Hard tasks get a floor of 160k tokens from the pool, raised to 192k when they get close, so they are no longer cut off in the middle of a search.
+\item After the main pass, a tail queue runs blind second chains: fresh conversations that stop at their first train-passing program, whose answer replaces attempt 2. Doubted tasks with long first chains go first; tasks with nothing train-passing go last. Leftover wall time near the end also funds chains.
+\end{enumerate}
+
+\fig{fig3_budget_v2.png}{0.72}{Schematic of the time bank and of budget v2 over a 12-hour run (four lanes shown; the real run has 32 to 48).}
+
+At equal total tokens (about 9M per 120-task run on augmented public evaluation, four runs each), budget v2 scored 98.5 against 92.4 for the time bank. Most of the gain came from the floors; the tail chains added 1 to 3 points. On the leaderboard v33 scored 73.89, against the v32 mean of 70.14. The same harness with 48 lanes (v34) scored 77.64, but only after the deadline.
+
+\section{Serving a 125B mixture of experts on four L4s}\label{sec:serving}
+
+Served naively, the weights took 18.6 of 22\,GB on each GPU, which left a KV pool of 0.11M tokens: two conversations at 120 tokens per second. Figure~\ref{fig:fig4_serving.png} shows the steps that changed this.
+
+\fig{fig4_serving.png}{0.78}{Serving steps on Kaggle's four L4s, each adding to the one above. Prefix-cache hits rose from 72\% to 96\% over the same steps.}
+
+\textbf{Expert pruning by routing.} We counted which experts ARC traffic actually routes to. The final mask keeps 320 of 512 experts per layer: it starts from a public REAP keep-set of 384 \cite{reap}, swaps in 32 experts that ARC traffic uses, and drops the 64 least used. Keeping more experts did not help: scores with 512, 448, 384, 352 and 320 experts were within noise, and on our 45 hard tasks 512 experts scored below 320 (25.8 against 28.3). Pruning grew the KV pool fourfold, so eight conversations fit (Appendix~\ref{app:model}).
+
+\textbf{Prefix caching on a hybrid model.} A linear-attention state cannot be rewound, so the server can reuse a conversation's cache only if the new request extends the old one exactly. Three bugs broke this: the harness normalised blank lines in stored replies, the speculative drafter dropped a block on every hit, and decoded linear-attention states were never cached. Fixing them raised the hit rate from 72\% to 96\%. Because any edit in the middle of the history forces a full re-prefill, the harness edits history only when it must truncate.
+
+\textbf{Memory.} FP8 copies of the n-gram embedding table pinned in host RAM, an INT4 KV cache, bf16 DeltaNet state and an 84\,GiB host-memory KV tier give a pool of 1.49M tokens in v32, and 1.65M with an FP8 attention indexer added for v34. The model runs tensor-parallel across all four GPUs with expert parallelism, because the 640-wide experts do not split into 128-wide quantization groups under four-way tensor parallelism.
+
+\textbf{Decoding.} An INT4 multi-token-prediction drafter \cite{mtp,specdec} proposes three tokens per step over a 16k-token FR-Spec vocabulary \cite{frspec}, and about 2.8 are accepted; the reduced vocabulary alone added 6 to 10\% throughput. The server enforces the thinking budget itself, so the harness never sends continuation requests, and a watchdog restarts the server and resumes the agents if it dies. We serve with a patched vLLM 0.30 \cite{vllm}.
+
+\section{Discussion}
+
+\textbf{Beyond ARC.} TCW errors are the ARC version of code that passes the visible tests and fails the hidden ones, a central failure of coding agents. The same blind spot exists wherever the verifier is a handful of examples. The budget rule carries over: fund search until a candidate passes the verifier, with floors so hard instances are not cut off midway; after that, spend on independent candidates rather than on reviewing the first, and use their disagreement both as the doubt signal and as the second answer. The serving lessons apply to any long multi-turn agent on small GPUs.
+
+\textbf{Limits.} Each leaderboard number is a single submission (SD about 2.7), offline numbers are optimistic (Section~\ref{sec:setting}), and several null results in Table~\ref{tab:null} are single runs. The replay experiments measure the second phase only.
+
+\section{Conclusion}
+Serving speed bought score until the remaining errors were programs that every available check accepted. After that, the next token was worth most in an independent derivation that can disagree with the first, and a budget built on that gave our best leaderboard result.
+
+\section*{Reproducibility}
+The submission notebook \href{https://www.kaggle.com/code/deepdreamer/fnext-w4a16-arc-submit}{deepdreamer/fnext-w4a16-arc-submit} contains the full harness and serving code; version 34 of the notebook is submission 57850872 (v33 in this paper). Appendix~\ref{app:lb} lists every scored submission. This report, its figures and the script that draws them are in the repository \href{https://github.com/sdmhans/arc-agi-2-flash-next-agent}{\texttt{sdmhans/arc-agi-2-flash-next-agent}} on GitHub.
+
+
+
+\section*{Acknowledgements}
+We thank Tufa Labs for the Duck harness, Intel for the AutoRound weights, dfranzen for the Kaggle reshard, albucino for the INT4 MTP drafter, and the authors of REAP and FR-Spec. Much of our code and this paper was written with help from Claude (Claude Code); all numbers come from our own runs.
+
+\small
+\begin{thebibliography}{99}\setlength{\itemsep}{1pt}
+\bibitem{chollet2019} F. Chollet. On the measure of intelligence. arXiv:1911.01547, 2019.
+\bibitem{arcagi2} F. Chollet, M. Knoop, G. Kamradt, B. Landers, H. Pinkard. ARC-AGI-2: A new challenge for frontier AI reasoning systems. arXiv:2505.11831, 2025.
+\bibitem{mitchell1982} T. M. Mitchell. Generalization as search. \emph{Artificial Intelligence}, 18(2):203--226, 1982.
+\bibitem{seung1992} H. S. Seung, M. Opper, H. Sompolinsky. Query by committee. In \emph{COLT}, 1992.
+\bibitem{huang2024} J. Huang, X. Chen, S. Mishra, H. S. Zheng, A. W. Yu, X. Song, D. Zhou. Large language models cannot self-correct reasoning yet. In \emph{ICLR}, 2024.
+\bibitem{selfconsistency} X. Wang, J. Wei, D. Schuurmans, Q. Le, E. Chi, S. Narang, A. Chowdhery, D. Zhou. Self-consistency improves chain of thought reasoning in language models. In \emph{ICLR}, 2023.
+\bibitem{alphacode} Y. Li et al. Competition-level code generation with AlphaCode. \emph{Science}, 378(6624):1092--1097, 2022.
+\bibitem{codet} B. Chen, F. Zhang, A. Nguyen, D. Zan, Z. Lin, J.-G. Lou, W. Chen. CodeT: Code generation with generated tests. In \emph{ICLR}, 2023.
+\bibitem{duck} Tufa Labs. The Duck harness. ARC Prize 2026 ARC-AGI-3 solution writeup, Kaggle, 2026.
+\bibitem{autoround} W. Cheng et al. Optimize weight rounding via signed gradient descent for the quantization of LLMs. arXiv:2309.05516, 2023.
+\bibitem{gateddeltanet} S. Yang, J. Kautz, A. Hatamizadeh. Gated delta networks: Improving Mamba2 with delta rule. In \emph{ICLR}, 2025.
+\bibitem{reap} M. Lasby et al. REAP the experts: Why pruning prevails for one-shot MoE compression. arXiv, 2025.
+\bibitem{mtp} F. Gloeckle, B. Y. Idrissi, B. Rozière, D. Lopez-Paz, G. Synnaeve. Better \& faster large language models via multi-token prediction. In \emph{ICML}, 2024.
+\bibitem{specdec} Y. Leviathan, M. Kalman, Y. Matias. Fast inference from transformers via speculative decoding. In \emph{ICML}, 2023.
+\bibitem{frspec} W. Zhao et al. FR-Spec: Accelerating large-vocabulary language models via frequency-ranked speculative sampling. In \emph{ACL}, 2025.
+\bibitem{vllm} W. Kwon et al. Efficient memory management for large language model serving with PagedAttention. In \emph{SOSP}, 2023.
+\end{thebibliography}
+
+\normalsize
+\clearpage
+\appendix
+\renewcommand{\thesection}{\Alph{section}}
+\begin{center}{\sffamily\bfseries\Large Appendices}\end{center}
+\input{app_eval}
+\input{app_resource}
+\input{app_serving}
+\input{app_harness}
+\input{app_tcw}
+\input{app_budget}
+\input{app_firstfit}
+\input{app_ft_lb}
+
+\end{document}

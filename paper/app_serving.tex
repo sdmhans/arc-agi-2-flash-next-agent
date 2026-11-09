@@ -1,0 +1,29 @@
+\section{Serving on four L4s}\label{app:serving}
+
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}lXrr@{}}
+\toprule
+Probe & Configuration & tok/s & KV pool \\
+\midrule
+v3 & unpruned, BF16 KV, no MTP (agent replay) & 132 & 110,636 \\
+v9 & first submission configuration, 2 lanes, MTP k3 & 120 & -- \\
+v11 & REAP-384 pruned at load time, 8 lanes & $\sim$305 & 317,499 \\
+v12 & swap32-cut320, 10 lanes (saturates from 8) & 300--340 & 471,859 \\
+v13 bench & REAP-384 x8 on 16 hard tasks at full depth (KV-bound) & 215 & -- \\
+FR-Spec & v104 configuration with 16k draft vocabulary, 8 lanes & 330 & -- \\
+P1 & v13 stack, 8 lanes, BF16 KV & 315 & -- \\
+P10 (v30) & 32 lanes, FP8 KV, host KV tier, bf16 DeltaNet state & 462 & -- \\
+P12 (v31) & 24 lanes, INT4 KV & 498 & 1.26M \\
+P14 (v32) & full v32 stack, 32 lanes & 639 & 1.49M \\
+P15 & lane gate: 32 / 40 / 48 lanes on real traffic & 736 / 693 / 836 & -- \\
+P16 (v34 stack) & 48 lanes + FP8 attention indexer & 713 & 1.65M \\
+\bottomrule
+\end{tabularx}
+\caption{Kaggle probes (four L4s). The v34 figure comes from probe P16 of the same stack, not from the scored v34 run, whose logs Kaggle does not show.}
+\end{table}
+
+\textbf{Prefix caching.} An early replay reused only 2.7\% of the prompt. Three causes kept the hit rate at 72\% on Kaggle after the obvious fixes: the harness dropped blank lines from stored replies, so the replayed history never matched; the speculative drafter released one 800-token block per hit; and vLLM never cached decoded tokens of the linear-attention state when MTP was on. Fixing the first two gave 84.6\%; caching decoded states raised it to about 96\% (H200 90.7 to 96.2\%, L40S 89.0 to 96.1\% with +10\% throughput). With 32--48 lanes the GPU cache is too small and an 84\,GiB host tier serves about 90\% of the misses.
+
+\textbf{Other gains.} Enforcing the thinking budget inside the server removed continuation requests, which had been 45--47\% of recomputed prefill. Sharded sampling sped up per-request decode by 5--11\%.
+
+\textbf{Dead ends.} Four draft tokens (higher acceptance, no throughput), FP8 two-shot all-reduce (slower than NCCL), FP8 hyper-connection weights (replay $-2$ to $-5\%$), and FP8 KV at eight lanes on L40S ($-7\%$ throughput).

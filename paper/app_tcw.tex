@@ -1,0 +1,47 @@
+\section{Train-consistent errors and attempt 2}\label{app:tcw}
+
+\subsection{Loss anatomy}
+In two runs of budget v2 (augD1 and augD2, 344 test inputs), 71 test inputs were lost: doubted (P0/P1) first attempt with attempt 2 also wrong 36 (51\%); confident wrong with attempt 2 wrong 12 (17\%); wrong output size with attempt 2 wrong 9 (13\%); no train-passing program 8 (11\%); confident wrong with no attempt 2, 3; other 3. The first four classes, 60 of 71, are train-consistent wrong. Counting every lost input whose first attempt was doubted, regardless of attempt 2, gives 43 of 71 (61\%). For the doubted-and-still-wrong cases: the doubt missed the real error in 21, the named alternative was another wrong reading in 10, the right reading was named but not used in 8, a right attempt 2 was displaced by a tail chain in 2, and a right manual answer was cut by ranking in 2. Over the final family of runs, train-consistent losses were 15 to 23 points per run, against about 1.2 for selection and 2--3.5 for budget cuts (10--12 under the old time bank).
+
+\subsection{Self-review calibration}
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+Runs & Right rate of attempt 1 \\
+\midrule
+Five final-family multi-wave runs & P1-doubted 37\%, undoubted 92\% (P0 never used) \\
+Three final-era single-wave runs & doubt-free 82--89\%, doubted 35--45\% \\
+v42 (218 final submits, 63 wrong) & wrong when last doubt was P1 24/31, P2 33/139, none 2/42 \\
+eval120 review audit & P0/P1 catches 62\% of wrong answers with 13\% false alarms on 510 right ones \\
+\bottomrule
+\end{tabularx}
+\caption{The review is a useful prior. In v42, the doubt list named exactly the faulty decision or region in 36 of 63 wrong answers (57\%), a related one in 15, and missed it in 12. Routing extra budget by review was no better than random per token, however.}
+\end{table}
+
+\subsection{Two independent runs as attempts 1 and 2}
+On standard eval120 at a fixed budget (H200), using two independent full runs of the same configuration as the two attempts raised the score from 80.6 to 93.2; 92\% of the gain came from tasks where both runs passed training with different test outputs. Taking attempt 2 from the same run's other checked candidates gained at most one point, because a chain stops at its first pass. In later offline runs, voting over $k$ independent full runs gave 92.3, 93.5, 96.2, 99.7 and 104.8 for $k$ = 2, 3, 5, 10 and 30.
+
+\subsection{Replay study (attempt 1 held fixed)}
+States were taken at the first-attempt submit of eight multi-wave runs, giving 265 states with a P1 doubt, of which 168 had a wrong first attempt. The replay re-sent the recorded first attempt byte for byte and charged its recorded tokens; a control path reproduced the original attempt-2 request exactly (4 rescues in both).
+
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+Second-phase strategy & Rescues \\
+\midrule
+Original same-chain attempt 2 (all 168) & 34 (20\%) \\
+Report-only explorers + merge in the main chain, v1 (all 168) & 42 \\
+Explorers that must propose concrete cells, v3 (all 168) & 46 (27\%); +0.070 per state vs original, 90\% CI +0.022 to +0.125 \\
+v1 or v3 (union) & 54 \\
+Answer paths on one run (20 states): alternative / structured / third reading / recheck & 4 / 5 / 5 / 4 \\
+Any of seven paths / merge of the seven by the main chain & 6 / 6 \\
+\bottomrule
+\end{tabularx}
+\caption{Replay results. The v3 explorers cost about 75k tokens per flagged task; only 46\% of P1 states could fit that inside the 160k floor. Over 228 states with explorer reports, both versions stayed wrong in the same way 70\% of the time.}
+\end{table}
+
+\textbf{Report audit.} An LLM judge compared 233 explorer reports (61 states) with the gold outputs. Of 149 reports that said ``keep attempt 1'', 121 kept cells that were wrong. Only 13 of 61 states had any report pointing to the fix, and when one did, the merge used it 13 of 14 times: the bottleneck was exploration, not merging.
+
+\textbf{Independent re-derivation.} 39.5\% of the 168 wrong doubted states were solved by some other independent run of the same task: 44.5\% when the first attempt had one P1 line, 27\% with two or more. 35\% were never solved by any run.
+
+\textbf{Checks that add priors.} Dihedral/equivariance post-processing recalled 13\% of errors and voting with it gained about 0. A contact-region gate lifted precision only 1.3x. Over 4,380 programs, the 284 that our audit lines flagged were right only 1.1\% of the time, but the audit caught just 8\% of wrong first attempts. Where several versions of an answer disagreed, the cells that were wrong in every version lay outside the region of disagreement (0 of 130 inside), so disagreement localises the ambiguity but not every error.

@@ -1,0 +1,73 @@
+\section{Resource curves}\label{app:resource}
+
+\subsection{Score versus tokens per task}
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}Xrr@{}}
+\toprule
+Configuration (standard eval120, one run unless noted) & Tokens/task & Score \\
+\midrule
+Early harness, 195 s per task & $\sim$17k & 31.0 \\
+Early harness, 276 s per task & $\sim$24k & 41.5 \\
+KT20 (two runs) & 22.3k & 44.0, 44.33 \\
+KT40 & 40.2k & 77.5 \\
+KT40 with history compaction to fit a 32k context & 40k & 65.0 \\
+U0: think cap 32k, 192k context & 68k & 97.33 \\
+87 configuration, bank 245 s vs 530 s & 24k vs 52k & 51.0 vs 85.6 \\
+V104 on augD1 (L40S): bank 820 vs later 1020-equivalent stack & 47.4k vs 56.2k & 78.83 vs 91.83 \\
+V104 with decode cache on (+8\% tokens, augD1) & 51.4k & 87.33 (from 78.83) \\
+\bottomrule
+\end{tabularx}
+\caption{Tokens per task and score. The two KT20 runs solved 48 and 47 tasks, 32 in both and 63 in either; their union (59 fully solved) was still far below KT40's 82, so extra throughput was better spent on longer chains than on more chains.}
+\end{table}
+
+\textbf{Hard tasks at fixed budgets.} On the 45 hard augD1 tasks, a single fresh chain capped at 128k, 160k and 192k scored 25.3, 27.9 and 30.0 on average over two runs, using 98k, 104k and 113k tokens. Two independent chains of 96--128k each scored about 31 using 179--203k. Only 1--5 of the 45 tasks reached a 192k cap.
+
+\textbf{Water-filling.} Simulations on the U0 run showed why allocation matters: fixed per-task caps of 17k/24k/48k would have scored 12/27/60.5, an oracle shared pool 68.5/80/93.8, but uninformed water-filling at 20k/24k only 25/31.5. Correct answers arrive late: the U0 tokens-to-correct quartiles were 23k/40k/66k (p90 107k).
+
+\subsection{Thinking caps}
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+Experiment & Result \\
+\midrule
+V104 era (augD1+augD2 means), 6144 / 8192 / 12288 & 81.6 / 82.8 / 82.6 (no effect) \\
+Final era, 12288 (reviews 16384) vs 6144 (8192) & augD1 95.17 vs 98.0, augD2 97.50 vs 97.83 (about $-1.6$) \\
+Final era, 32768 at the same 86k budget & 90.83 vs 96.67; tasks without any train-passing program 12 vs 2 \\
+45 hard tasks, 8k cap & 28.33 (+0.00) \\
+\bottomrule
+\end{tabularx}
+\caption{Thinking caps. Short caps force more tool rounds; at fixed budgets, more Python tries beat longer thinking. In production about 24.5\% of rounds and 53\% of tokens hit the 6,144 cap.}
+\end{table}
+
+\subsection{Lanes, temperature}
+Throughput on the four L4s first saturated near 300--310 tokens per second from eight lanes on, and expert count did not change that ceiling (384 or 320 experts both reached about 302); the extra lanes only became useful once the KV pool and host tier grew (Appendix~\ref{app:serving}). On real agent traffic, 48 lanes gave 836 tokens per second against 736 at 32 in a lane-gate probe, with per-lane speed falling from 23.0 to 17.4. On a longer probe, throughput fell from 816 with 47 requests running to 493 with 30 once the KV pool filled. Temperature 0.7 beat 1.0 on an early screening set (36.0 vs 32.0); 0.2--0.5 were within noise.
+
+\section{Model and pruning}\label{app:model}
+
+The model has 48 layers in twelve groups of three Gated DeltaNet layers and one sparse-attention layer, 512 experts with 10 routed per token, and a 51B-parameter n-gram table. The INT4 checkpoint is 181\,GB (routed experts 62.8\,GB, n-gram table 102.5\,GB in BF16, MTP head 5.2\,GB). Because the expert width of 640 splits into 160 under four-way tensor parallelism, which is not a multiple of the 128-wide quantization group, we serve with expert parallelism.
+
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+Mask (standard eval120 unless noted) & Score \\
+\midrule
+Unpruned 512 experts, bank 500 & 85.33 \\
+ARC-448 (top routing mass on ARC traffic) & 86.83 \\
+REAP-384, bank 500 (3 runs) & 81.0 / 81.5 / 82.5 \\
+ARC-384 & 77.17 \\
+swap32-cut320 (REAP-384, 32 swaps toward ARC-heavy experts, cut to 320), 4 runs & mean 82.25 \\
+reap-cut320 (no swap step), 3 runs & 83.0 / 77.5 / 77.17 \\
+swap32-cut288 vs cut320, 87 configuration, bank 530 & 79.0 (2 runs) vs 85.6 \\
+swap32-cut256 & 62.0 \\
+At the Kaggle-realistic budget: REAP-384 x8 lanes (bank 365) vs swap32-cut320 x8 & 75.7 (2 runs) vs 82.25 \\
+45 hard augD1 tasks, 160k: 512 experts vs cut320 & 25.8 vs 28.3 (2 runs) \\
+\bottomrule
+\end{tabularx}
+\caption{Expert masks. Our final reading (mid-October, more runs per arm): scores with 512, 448, 384, 352 and 320 experts were within noise, cut288 was about 4 points lower and cut256 far lower; on the hard set 512 experts were below 320. At Kaggle's real throughput the pruned model wins clearly because it fits more lanes. Re-deriving the mask from each fine-tuned model's own routing moved scores by 3 to 9.5 points on the originals: masks are fitted to eval120 traffic.}
+\end{table}
+
+\textbf{Quantization and KV.} FP8 copies of the n-gram table (from a public NVFP4 checkpoint) cost no score (91.83 vs 90.33 on augD1) and halve its host memory. FP8 KV needed a two-file backport from vLLM; on an L40S server it grew the KV pool 1.57x but cost 7\% throughput and lowered draft acceptance, so it only paid on Kaggle once lanes became KV-bound. The final stack uses INT4 KV with the DeltaNet state kept in bf16.
+
+\textbf{Speculative decoding.} The INT4 MTP head with three draft tokens averaged 2.68--2.92 accepted tokens on Kaggle (per-position acceptance 0.77/0.60/0.47). Quantization and pruning did not reduce acceptance (INT4 head 2.88, BF16 head 2.84, unpruned 2.84). Four draft tokens raised acceptance to 3.20 but not throughput. A 16k-token FR-Spec draft vocabulary raised throughput 11.6\% on a Kaggle probe (330 vs 296 tokens per second at eight lanes) with no score change (90.33 vs 89.5); 8k and 6k vocabularies gave the same acceptance.
+
+\textbf{Other base models in the same harness.} Qwen3.8-27B FP8 scored 32.0 at about 39k tokens per task and 57.5 at about 67k (standard eval120), and its decode slowed sharply on L4 as contexts grew. DeepSeek-V4-Flash scored 9--10 at about 22k tokens. A dots3 preview model scored 54.0 at 52k against 85.6 for Flash-Next, and the two were barely complementary (union +4 vs +10 for two Flash-Next runs).

@@ -1,0 +1,37 @@
+\section{Budget mechanism details}\label{app:budget}
+
+\subsection{What was wrong with the time bank}
+The time bank never gave a task less than its base share, and every finished task donated its unused seconds to all running and queued tasks. That made the outcome depend on queue order: in a simulation of the Kaggle run, early tasks got about 1.1x the base and late ones about 3x. The harness's ``easy first'' order (by grid size) put the historically hardest tasks first (expected solve rate 0.28 against 0.53 for the last quarter). Replaying the exact time-bank code on 240 tasks showed the run ending 0.5--2.4 hours early while 41--49 hard first-wave tasks were cut at 100--115k tokens, against the 127--137k they needed; a value model put the cost of those cuts at no more than 7--12 points per 240 tasks (about 3--5 leaderboard points). On our machines, multi-wave runs under the time bank scored 4--6 below single-wave runs of the same harness, which is the same effect.
+
+\subsection{Design of budget v2}
+\begin{itemize}
+\item Base 86k generated tokens per task; unused tokens go to a shared pool.
+\item A task is flagged hard when its first answer carries a P0/P1 doubt or nothing passes training by 60k tokens. In practice 52--55 of 120 tasks were flagged (10--13 for a doubt, 42 for no pass), and flagged tasks used 111--115k on average.
+\item Flagged tasks get a floor of 160k from the pool, extended lazily to 192k when they come within 10k of their allotment. The values came from the hard-task budget curve (Appendix~\ref{app:resource}).
+\item A tail queue runs second chains capped at 160k (at least 100k needed to start): fresh conversations that stop at their first train-passing program and replace attempt 2. Order: doubted tasks with long first chains first; tasks without any train-passing first attempt last.
+\item On Kaggle the deadline of every task is the global end of the run, tokens set the budgets, and leftover wall time near the end also funds chains.
+\end{itemize}
+
+\subsection{Results}
+\begin{table}[H]\centering\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Run (multi-wave, 120 tasks, 24 lanes, 86k per task) & augD1 & augD2 & Tokens \\
+\midrule
+Time bank, run 1 & 94.17 & 91.33 & 9.24M / 8.81M \\
+Time bank, run 2 & 91.00 & 93.17 & -- \\
+Budget v2 on the v32 harness (primary only) & 98.83 (97.83) & 97.17 (94.17) & 9.06M / 8.96M \\
+Budget v2, exact v33 build & 99.50 & 98.67 & -- \\
+Budget v2, v33 build, repeat & 93.50 & 94.83 & -- \\
+\bottomrule
+\end{tabular}
+\caption{Budget v2 against the time bank. Four-run means: 98.54 against 92.42 (+6.1). Including the two later repeats of the v33 build, the budget-v2 mean over six runs is 97.1. On the leaderboard v33 scored 73.89 against the v32 mean of 70.14.}
+\end{table}
+
+\subsection{Tail chains}
+\begin{itemize}
+\item Value depends on whom they go to. In a selection study of 175 tail chains, tasks with no train-passing first attempt got 0 rescues from 8 chains of 120k each; tasks with a doubted attempt 1 and a primary of at least 100k gave the best return, 5.0 points from 41 chains (1.33 per million tokens).
+\item Length matters: a chain cut at 60k kept 18--26\% of a full chain's value, 85--90\% at 120k. On 45 hard tasks a 64k second chain was worth about nothing, a 128k chain 3.3 points per run.
+\item With a realistic pool (about 11k spare tokens per task on Kaggle), the order decides whether tail chains pay: with the old order the net was about 0, hard-first made it positive.
+\item Merge rule: replacing attempt 2 scored 31.5 on 57 tail task-runs, against 29.0 for filling only an empty slot, 28.0 per test input and 26.0 for keeping the primary. Weighted voting lost on held-out runs ($-1.0$ per run).
+\end{itemize}

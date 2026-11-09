@@ -1,0 +1,8 @@
+.fonts/
+*.aux
+*.log
+*.fls
+*.fdb_latexmk
+*.xdv
+*.out
+.DS_Store

@@ -1,0 +1,86 @@
+\section{Harness components and ablations}\label{app:harness}
+
+Baselines change over the competition; each table states its own. Most rows are single runs, so differences under about 5 points are noise (Appendix~\ref{app:eval}).
+
+\subsection{Early harness (standard eval120, H200)}
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+Change & Result \\
+\midrule
+Auto-check on all training pairs, cell diffs, grid helpers (KT20 budget) & 43.67 vs 44.0/44.33; more train passes (54 vs 47/49) but the extra ones were overfit \\
+Risk audit with a flagged second candidate (KT20) & 41.5 \\
+Removing a visible ``estimate your difficulty'' request (screening set) & +9 \\
+Reviewer showing the test outputs again (a display bug had hidden them since v23), plus test audit: the ``87 configuration'' & 87.17 / 86.83 / 82.83 vs 80.5 \\
+Risk check during search instead of after acceptance & 83.0 / 81.5 / 81.5 vs 87.17 / 86.83 \\
+Extra views of the grid, training-pair augmentation, diff/invariant feedback (87 base) & 79.5 / 76.5 / 82.5 \\
+Compressing history at about 22k tokens & about $-1$ \\
+Fixed time per task instead of a shared time bank & $-14.7$ (65.83 vs 80.5) \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Self-review and guides (augmented, H200)}
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+Change & Result \\
+\midrule
+v42: review lists doubts as P0/P1/P2, review thinking 8,192, forced close & 82.5 (80.5/84.5) vs 77.5 \\
+v49: a doubted answer triggers the alternative-reading attempt 2 & 84.92 vs 82.5; attempt 2 rescued 10 and 6 tasks but attempt 1 fell 3--4.5 \\
+v52 / v53: doubts ranked by consequence / a counterexample-based P0 & 82.25 / 83.25 \\
+Removing the review module and idea book from v49 & about $-8$ on each seed \\
+No review at all vs full review (L40S, 4 runs each) & 86.96 vs 90.61 \\
+Time-triggered ``stuck'' guide (bank, two seeds) & 75.25 vs 82.5, dropped \\
+Idea book of transformation families in the prompt vs as a tool & 82.5 vs 87.33 \\
+Helper card added to the system prompt (4 runs each, offline) & 90.96 vs 88.62, but leaderboard 65.00 vs 69.31 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The helper card's offline gain did not survive the leaderboard; part of it traced to a helper that raised an error inside every \texttt{transform} that called it, in all versions from v102 to v109.
+
+\subsection{Mechanisms that did not help}
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+Mechanism & Result \\
+\midrule
+Exploration ledger without review (26 hard tasks) & 5.0 / 5.0 vs about 9.7; 24 of 26 tasks tried exactly one idea before the first pass \\
+Ideas board (three versions, 8 runs) & consistently $-3$ on attempt 1 \\
+Explore forks / skill review / early challenge & worse / null / 38.5 vs 40.0 \\
+Single-point mutations of wrong programs & 0 of 34 never-solved task-runs reached the right output \\
+Time-bank overdraft of 15\% & within noise offline; leaderboard 69.03 / 65.56 \\
+Direct-answer attempt 2 & 82.33 vs 88.83; ran 39 times, added nothing \\
+Independent branch on doubt (early version) & 81.5 \\
+Alternative readings written at submit (4--6 runs) & 89.96--90.61 vs 90.96 \\
+In-context ``view'' second chain & rescued 0.5 tasks for 38\% of a run's tokens \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Final-era harness (L40S, token clock 86k, augD1, baseline 96.67 unless noted)}
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+Mechanism & Result \\
+\midrule
+Fresh restart when no near-pass by 43k & 79.83; 0 of 33 restarts rescued, 16 of these tasks the baseline solved late \\
+Independent view switch at a P0/P1 doubt & 91.17; rescue after a wrong first fit 8/36 vs 10/36 \\
+Model chooses when to stop iterating & 94.33; 68 of 72 called finish right after a second version \\
+Review-driven iteration loop & 105.33 / 98.83 on augD1, but $-6$ to $-10$ on the hard set (17.5/15.0 vs 23.5/25.0) \\
+Critic at attempt 1 (35-task subset) & called 16--19 right outputs wrong, 2--8 wrong outputs consistent \\
+Symmetry cell hints (two variants) & 97.67 / 95.17 \\
+Invariant audit (offline) & flags 52\% of right vs 56\% of wrong answers \\
+Context 64k / 48k & 13.5 vs 24.25 on the hard set; 89.00 vs 103.17 on augD1 \\
+Hint to switch readings at compaction & 17.5 vs 24.25 (hard set) \\
+Residual review / close-left nudges (45 hard, 160k) & 25.0 / 25.9 vs 28.3 \\
+Fresh advisor at a stuck point (52 states) & 28.94 vs 27.50 \\
+Live advisor in multi-wave runs (5 runs vs 5 controls) & about 0 \\
+Reviewer at attempt 1 (76 states) & $-1.0$ / $-2.0$ \\
+``Let me reconsider'' opener & $-0.06$ per state \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+A token audit of 90 chains of the v32 harness: model thinking 61\% of context, tool output 12\%, model code 10\%, grids 5.7\%, system text 4.5\%. Of 26 unsolved tasks, 25 ended with two train-passing but test-wrong candidates, and 73\% of their tokens were spent before attempt 1.

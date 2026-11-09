@@ -1,0 +1,33 @@
+\section{Evaluation protocol}\label{app:eval}
+
+\subsection{Datasets}
+\begin{itemize}
+\item \textbf{eval120}: the 120 public ARC-AGI-2 evaluation tasks. Until 4 October we made decisions on these originals.
+\item \textbf{augD1, augD2}: two fixed augmented copies of eval120. Each task gets a seeded random non-identity dihedral transform and a permutation of colours 1--9; answers are mapped back before scoring. From 4 October all decisions used these. Augmentation cost the 87 configuration about 11\% (aug mean 75.9 against 85.6 on the originals), almost entirely as more train-passing but test-wrong answers rather than lost geometry. The two seeds are not equally hard: augD2 scores run higher than augD1.
+\item \textbf{Hard benches}: 45 ``online-hard'' augD1 tasks (hard in at least two of three runs, solved with fresh fixed-budget chains), and later a 120-task hard set selected from screen-zero tasks. Early screening sets (dev72, dev26) proved unreliable and are only used here for mechanism notes.
+\item \textbf{Instability}: across 18 augD1 runs, attempt 1 was always right on 32 tasks, never on 13 and sometimes on 75. Across 13 runs of another configuration the per-run mean was 87.4 while the union reached 111.3.
+\end{itemize}
+
+\subsection{Kaggle-equivalent budgets}
+Offline runs must give each task what it would get on Kaggle. We first converted wall time between machines (for example, an L40S/H200 throughput ratio of 2.44 without MTP). This drifted with CPU contention: time-only H200 evals gave 41--52k tokens per task for the same seconds. From mid-October we anchored on tokens measured on Kaggle itself: a probe of the v104 configuration generated 45.3k tokens per task, and every offline budget was rescaled to that anchor. For the final harness the agent runs on a \emph{token clock}: a bank of 86k generated tokens per task, with the harness's time-based triggers driven by tokens instead of seconds (otherwise triggers such as ``skip attempt 2 if early'' fired at 38k tokens instead of 21.5k on faster machines). Kaggle v33 and v34 use the same token clock, about 20M generated tokens per 240-task run.
+
+\subsection{Noise}
+\begin{table}[H]\centering\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+Setting & Spread \\
+\midrule
+Public leaderboard, v13 submitted four times & 71.81, 68.75, 65.56, 70.83 (SD about 2.7) \\
+Public leaderboard, v32 submitted three times & 70.97, 72.64, 66.81 (SD about 3.0) \\
+Standard eval120, swap32-cut320 at a fixed budget, 6 runs & 74.0 to 84.5 (mean 80.5) \\
+Standard eval120, the 87 configuration, 3 runs & 87.17, 86.83, 82.83 \\
+Augmented, same seed & 40--51 of 120 tasks flip between runs; observed SD 5.1--5.5 \\
+Final-era multi-wave runs on augD1, same configuration & 99.50 vs 93.50 (24 tasks differ) \\
+45 hard tasks, fixed budget & SD about 3 tasks per run \\
+\bottomrule
+\end{tabularx}
+\caption{Run-to-run noise. Because of it we required several runs per arm for small effects, and treated single-run differences under about 5 points as noise.}
+\end{table}
+
+\subsection{Leaderboard versus offline}
+For v32, the leaderboard score was 0.864 of the matching offline score (four offline runs of the same harness, mean 97.46 of 120).
